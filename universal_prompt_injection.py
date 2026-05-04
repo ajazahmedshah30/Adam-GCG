@@ -65,10 +65,79 @@ def generate_pattern(length):
     return ''.join(pattern)[:length]
 
 
+def align_state_tensor(state_tensor, reference_tensor, state_dtype=None):
+    if state_dtype is None:
+        state_dtype = reference_tensor.dtype
+    if state_tensor is None:
+        return torch.zeros_like(reference_tensor, dtype=state_dtype)
+    if state_tensor.size() == reference_tensor.size():
+        return state_tensor.to(dtype=state_dtype)
+
+    print(f"Aligning optimizer state from {state_tensor.size()} to {reference_tensor.size()}")
+    aligned_tensor = torch.zeros_like(reference_tensor, dtype=state_dtype)
+    min_shape = [min(s1, s2) for s1, s2 in zip(state_tensor.size(), reference_tensor.size())]
+    slices = tuple(slice(0, min_dim) for min_dim in min_shape)
+    aligned_tensor[slices] = state_tensor[slices].to(dtype=state_dtype)
+    return aligned_tensor
+
+
+def accumulate_coordinate_gradient(coordinate_grad, next_grad):
+    if coordinate_grad is None:
+        return next_grad
+    if coordinate_grad.size() != next_grad.size():
+        print(f"Aligning batch gradients from {coordinate_grad.size()} to {next_grad.size()}")
+        coordinate_grad = align_state_tensor(coordinate_grad, next_grad)
+    return coordinate_grad + next_grad
+
+
+def get_optimizer_dir_name(args):
+    if args.optimizer == "adam":
+        return f"adam_b1_{args.adam_beta1}_b2_{args.adam_beta2}_eps_{args.adam_eps}"
+    return f"momentum_{args.momentum}"
+
+
+def validate_args(args):
+    if not 0 <= args.adam_beta1 < 1:
+        raise ValueError(f"--adam_beta1 must be in [0, 1), got {args.adam_beta1}")
+    if not 0 <= args.adam_beta2 < 1:
+        raise ValueError(f"--adam_beta2 must be in [0, 1), got {args.adam_beta2}")
+    if args.adam_eps <= 0:
+        raise ValueError(f"--adam_eps must be > 0, got {args.adam_eps}")
+    if args.start >= args.end:
+        raise ValueError(f"--start must be smaller than --end, got start={args.start}, end={args.end}")
+
+
+def apply_optimizer(coordinate_grad, optimizer_state, args, step_idx):
+    coordinate_grad_fp32 = coordinate_grad.to(torch.float32)
+    if args.optimizer == "adam":
+        first_moment = align_state_tensor(optimizer_state["first_moment"], coordinate_grad_fp32, state_dtype=torch.float32)
+        second_moment = align_state_tensor(optimizer_state["second_moment"], coordinate_grad_fp32, state_dtype=torch.float32)
+
+        first_moment = args.adam_beta1 * first_moment + (1 - args.adam_beta1) * coordinate_grad_fp32
+        second_moment = args.adam_beta2 * second_moment + (1 - args.adam_beta2) * coordinate_grad_fp32.pow(2)
+
+        first_unbiased = first_moment / (1 - args.adam_beta1 ** (step_idx + 1))
+        second_unbiased = second_moment / (1 - args.adam_beta2 ** (step_idx + 1))
+        final_coordinate_grad = first_unbiased / (second_unbiased.clamp_min(0).sqrt() + args.adam_eps)
+
+        optimizer_state["first_moment"] = first_moment.detach().clone()
+        optimizer_state["second_moment"] = second_moment.detach().clone()
+        return final_coordinate_grad
+
+    previous_grad = align_state_tensor(optimizer_state["previous_grad"], coordinate_grad_fp32, state_dtype=torch.float32)
+    final_coordinate_grad = args.momentum * previous_grad + coordinate_grad_fp32
+    optimizer_state["previous_grad"] = coordinate_grad_fp32.detach().clone()
+    return final_coordinate_grad
+
+
 def get_args():
     parser = argparse.ArgumentParser(description="Configs")
 
+    parser.add_argument("--optimizer", type=str, default="adam", choices=["adam", "momentum"])
     parser.add_argument("--momentum", type=float, default=1.0)
+    parser.add_argument("--adam_beta1", type=float, default=0.9)
+    parser.add_argument("--adam_beta2", type=float, default=0.999)
+    parser.add_argument("--adam_eps", type=float, default=1e-8)
     parser.add_argument("--target", type=int, default=0)
     parser.add_argument("--tokens", type=int, default=150)
 
@@ -91,6 +160,7 @@ def get_args():
 
 if __name__ == '__main__':
     args = get_args()
+    validate_args(args)
     device = f'cuda:{args.device}'
 
     model_path_dicts = {"llama2": "./models/llama2/llama-2-7b-chat-hf", "vicuna": "./models/vicuna/vicuna-7b-v1.3",
@@ -104,7 +174,6 @@ if __name__ == '__main__':
     num_steps = args.num_steps
     batch_size = args.batch_size
     topk = args.topk
-    momentum = args.momentum
     allow_non_ascii = False
     model, tokenizer = load_model_and_tokenizer(model_path,
                                                 low_cpu_mem_usage=True,
@@ -115,7 +184,8 @@ if __name__ == '__main__':
     harmful_data = pd.read_csv(args.dataset_path)
     infos = {}
     adv_suffix = adv_string_init
-    previous_coordinate_grad = 0
+    optimizer_state = {"previous_grad": None, "first_moment": None, "second_moment": None}
+    optimizer_dir_name = get_optimizer_dir_name(args)
     for j in tqdm(range(num_steps)):
         log = log_init()
         info = {"goal": "", "target": "", "final_suffix": "",
@@ -123,7 +193,7 @@ if __name__ == '__main__':
         dataset = zip(harmful_data.instruction[args.start:args.end], harmful_data.input[args.start:args.end],
                       harmful_data.output[args.start:args.end], harmful_data.task[args.start:args.end],
                       harmful_data.dataset[args.start:args.end])
-        coordinate_grad = 0
+        coordinate_grad = None
         start_time = time.time()
         for i, (instruction, input, output, task, dataset) in enumerate(dataset):
             conv_template = load_conversation_template(template_name)
@@ -143,23 +213,10 @@ if __name__ == '__main__':
                                         suffix_manager._control_slice,
                                         suffix_manager._target_slice,
                                         suffix_manager._loss_slice)
-            if isinstance(coordinate_grad, torch.Tensor) and next_grad.size() != coordinate_grad.size():
-                print(f"Aligning...\ncoordinate_grad: {coordinate_grad.size()}\nnext_grad: {next_grad.size()}")
-                new_next_grad = torch.zeros_like(coordinate_grad)
-                min_shape = [min(s1, s2) for s1, s2 in zip(next_grad.size(), coordinate_grad.size())]
-                slices = tuple(slice(0, min_dim) for min_dim in min_shape)
-                new_next_grad[slices] = next_grad[slices]
-                next_grad = new_next_grad
-            coordinate_grad += next_grad
-        if j != 0 and previous_coordinate_grad.size() != coordinate_grad.size():
-            print(f"Aligning...\ncoordinate_grad: {coordinate_grad.size()}\nprevious_coordinate_grad: {previous_coordinate_grad.size()}")
-            new_previous_grad = torch.zeros_like(coordinate_grad)
-            min_shape = [min(s1, s2) for s1, s2 in zip(previous_coordinate_grad.size(), coordinate_grad.size())]
-            slices = tuple(slice(0, min_dim) for min_dim in min_shape)
-            new_previous_grad[slices] = previous_coordinate_grad[slices]
-            previous_coordinate_grad = new_previous_grad
-        final_coordinate_grad = momentum * previous_coordinate_grad + coordinate_grad
-        previous_coordinate_grad = coordinate_grad
+            coordinate_grad = accumulate_coordinate_gradient(coordinate_grad, next_grad)
+        if coordinate_grad is None:
+            raise ValueError("No gradients were accumulated. Check the dataset slice defined by --start and --end.")
+        final_coordinate_grad = apply_optimizer(coordinate_grad, optimizer_state, args, j)
         adv_suffix_tokens = input_ids[suffix_manager._control_slice].to(device)
         new_adv_suffix_toks = sample_control(adv_suffix_tokens,
                                              final_coordinate_grad,
@@ -206,6 +263,7 @@ if __name__ == '__main__':
             "################################\n"
             f"Current Epoch: {j}/{num_steps}\n"
             f"Loss:{current_loss.item()}\n"
+            f"Optimizer: {args.optimizer}\n"
             f"Type: \n{args.injection}\n"
             f"Current Target: \n{target}\n"
             f"Current Suffix:\n{best_new_adv_suffix}\n"
@@ -222,11 +280,13 @@ if __name__ == '__main__':
         info["target"] = target
         infos[j] = info
 
-        if not os.path.exists(
-                f"./results/eval/{args.model}/{args.injection}/momentum_{args.momentum}/token_length_{args.tokens}/target_{args.target}"):
-            os.makedirs(
-                f"./results/eval/{args.model}/{args.injection}/momentum_{args.momentum}/token_length_{args.tokens}/target_{args.target}")
+        output_dir = (
+            f"./results/eval/{args.model}/{args.injection}/"
+            f"{optimizer_dir_name}/token_length_{args.tokens}/target_{args.target}"
+        )
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
         with open(
-                f'./results/eval/{args.model}/{args.injection}/momentum_{args.momentum}/token_length_{args.tokens}/target_{args.target}/{args.start}_{args.end}_{seed}_{args.save_suffix}.json',
+                f'{output_dir}/{args.start}_{args.end}_{seed}_{args.save_suffix}.json',
                 'w') as json_file:
             json.dump(infos, json_file)

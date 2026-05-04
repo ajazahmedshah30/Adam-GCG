@@ -20,6 +20,15 @@ random.seed(seed)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(seed)
 
+
+def infer_injection_from_path(path):
+    injection_types = ["semi-dynamic", "dynamic", "static", "refuse"]
+    for injection_name in injection_types:
+        if f"/{injection_name}/" in path or f"\\{injection_name}\\" in path:
+            return injection_name
+    return None
+
+
 def generate(model, tokenizer, input_ids, assistant_role_slice, gen_config=None):
     if gen_config is None:
         gen_config = model.generation_config
@@ -76,7 +85,7 @@ def get_args():
     parser.add_argument("--evaluate", type=str, default="duplicate_sentence_detection")
     parser.add_argument("--dataset_path", type=str, default="./data/")
     parser.add_argument("--path", type=str, default="")
-    parser.add_argument("--injection", type=str, default="static")
+    parser.add_argument("--injection", type=str, default="")
 
     args = parser.parse_args()
     return args
@@ -98,6 +107,11 @@ if __name__ == '__main__':
                                                 use_cache=False,
                                                 device=device)
     load_path = args.path
+    if not args.injection:
+        inferred_injection = infer_injection_from_path(load_path)
+        if inferred_injection is None:
+            raise ValueError("Could not infer injection type from --path. Please provide --injection explicitly.")
+        args.injection = inferred_injection
     save_path = load_path.replace('.json', f'_{args.evaluate}.json')
     with open(load_path, 'r') as json_file:
         loaded_data = json.load(json_file)
