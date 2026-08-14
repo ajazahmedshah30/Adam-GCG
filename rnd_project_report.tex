@@ -1,0 +1,442 @@
+\documentclass[12pt,a4paper]{report}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+\setlength{\parskip}{0.5em}
+\setlength{\parindent}{0pt}
+\onehalfspacing
+
+\begin{document}
+
+\begin{titlepage}
+\begin{center}
+
+%=====================================================%
+%---------------THESIS TITLE--------------------------%
+%=====================================================%
+\definecolor{blue}{rgb}{0,0,1}
+
+{{\Large \textbf{Optimizer Substitution in Universal Prompt Injection: An Adam vs Momentum Study}\par}}
+\vspace{1cm}
+
+%=====================================================%
+%---------------Partial Fulfillment-------------------%
+%=====================================================%
+\vspace{0.4cm}
+{
+\textbf{\large RnD Project Report (CD 671)} \par}
+\vspace{0.2cm}
+
+%=====================================================%
+%---------------Degree--------------------------------%
+%=====================================================%
+\vspace{0.5cm}
+{
+\textbf{\large Master of Technology\\ \vspace{1mm} in\\ \vspace{1mm} CSE} \par}
+\vspace{2mm}
+
+%=====================================================%
+%---------------AUTHOR'S NAME-------------------------%
+%=====================================================%
+\vspace{5mm}
+{\large by\par}
+\vspace{0.05cm}
+{\large \textbf{\textcolor{blue}{Your Name}} \\ (22xxxxx)\par}
+\vspace{0.4cm}
+
+%=====================================================%
+%---------------Supervisor Name-----------------------%
+%=====================================================%
+{ Under the Supervision of \par}
+{\large \textbf{\textcolor{blue}{Prof. Name}}\par}
+\vspace{0.8 cm}
+
+%=====================================================%
+%---------------UNIVERSITY lOGO-----------------------%
+%=====================================================%
+\IfFileExists{Images/iitb_logo.png}{\includegraphics[width=0.25\linewidth]{Images/iitb_logo.png}}{\vspace{1.8cm}}
+\vspace{0.6 cm}
+
+%=====================================================%
+%---------------DEPARTMENT'S NAME---------------------%
+%=====================================================%
+{\large Department of CSE\par}
+\vspace{0.4cm}
+
+{\large \textbf{INDIAN INSTITUTE OF TECHNOLOGY BOMBAY}\par}
+\vspace{0.4cm}
+
+%=====================================================%
+%---------------DATE----------------------------------%
+%=====================================================%
+{\large \textbf{Mumbai - 400076, India}}
+\vspace{0.4cm}
+
+{\large {May, 2025}}
+\end{center}
+\end{titlepage}
+
+\pagenumbering{roman}
+
+\chapter*{Abstract}
+Prompt injection is a serious weakness in large language model applications because malicious instructions can be hidden inside the same context that also contains legitimate user or system content. Recent papers have shown that these attacks can be automated instead of being written by hand. This project studies one part of that pipeline: whether the optimizer used during suffix search changes the final attack behavior.
+
+The experiments are based on an implementation of automatic universal prompt injection in which the attack objective, prompt construction, and evaluation flow are kept fixed. Only the optimizer in the gradient aggregation step is changed. Final runs were carried out on the IIT Bombay Prajna cluster using LLaMA-2-7B-Chat with a token budget of 120 for static, semi-dynamic, and dynamic attack settings.
+
+In the optimization logs, Adam reaches lower final losses than momentum in the static and semi-dynamic settings, while momentum is slightly better in the dynamic setting. Transfer was then evaluated using a lean protocol over four downstream tasks, 100 samples per task, and five attempts per sample. Under this setting, Adam reaches a static average attack success rate (ASR) of 37.93\%, compared with 13.88\% for momentum. For semi-dynamic and dynamic transfer, both optimizers give 0\% ASR.
+
+The main conclusion is limited but clear. Adam helps in the static setting, but that gain does not carry over to the more contextual settings tested here. The report therefore presents a focused empirical comparison of optimization dynamics inside a universal prompt injection pipeline, rather than claiming a broadly stronger attack.
+
+\chapter*{Acknowledgement}
+I would like to express my sincere gratitude to my supervisor, \textcolor{blue}{Prof. Name}, for guidance, feedback, and support throughout this RnD project. I also acknowledge the Department of Computer Science and Engineering, IIT Bombay, for providing the academic environment and computational access required for this work.
+
+\tableofcontents
+\listoftables
+\clearpage
+\pagenumbering{arabic}
+
+\chapter{Introduction}
+\section{Motivation}
+Large language models are now used inside assistants, retrieval systems, coding tools, and document-processing applications. In these systems, the model often receives a mixture of developer instructions, user inputs, and external context in a single prompt. That setup creates the condition for prompt injection, where malicious text placed inside the context changes the model's behavior in ways the application did not intend \cite{perez2022promptinject,liu2024upi}.
+
+This matters because the weakness is not only at the model level. It appears at the application level, where trusted and untrusted text are merged before generation. If attacker-controlled content can reliably override the intended task, then the robustness of the whole system depends on more than alignment alone \cite{perez2022promptinject}.
+
+\section{Research Gap}
+Earlier work established prompt injection as a real attack setting, and later work showed that adversarial suffixes can be optimized automatically rather than written manually \cite{perez2022promptinject,zou2023gcg,liu2024upi}. In the universal prompt injection setting of Liu et al., only a very small number of training examples are needed to build attacks that transfer across tasks \cite{liu2024upi}. What is still unclear is how much this behavior depends on the optimizer used during the search.
+
+In most implementations, the optimizer is treated as a fixed part of the code. That makes it easy to overlook its role in a hard discrete search problem. However, suffix optimization is sensitive to how gradient information is accumulated across steps, and that may affect both convergence and the kind of suffixes that are eventually found.
+
+\section{Problem Statement}
+This report studies universal prompt injection as a discrete optimization problem over adversarial suffixes. The specific problem is not simply whether one optimizer can replace another in code. The real question is whether different optimizer dynamics change the search enough to affect the quality and transferability of the resulting suffixes.
+
+More precisely, the problem addressed here is:
+
+\begin{quote}
+\emph{Given a fixed universal prompt injection objective, fixed target strings, fixed model family, and fixed downstream evaluation pipeline, how does the choice of optimizer used to accumulate coordinate-gradient information affect convergence behavior, final suffix quality, and transfer attack success across static, semi-dynamic, and dynamic injection regimes?}
+\end{quote}
+
+The point of framing the problem this way is to treat the optimizer as part of the attack mechanism, not as a minor implementation detail.
+
+\section{Research Questions}
+The study is organized around the following questions:
+\begin{enumerate}[label=\textbf{RQ\arabic*:}]
+\item How does optimizer choice influence convergence behavior and terminal optimization quality in universal prompt injection?
+\item To what extent do improvements at the optimization stage translate into measurable gains in downstream attack success rate?
+\item Does the effect of optimizer dynamics remain stable across static, semi-dynamic, and dynamic prompt injection settings?
+\end{enumerate}
+
+\section{Contributions}
+The main contributions of this RnD project are:
+\begin{enumerate}[label=\arabic*.]
+\item a controlled empirical study of optimization dynamics within a universal prompt injection pipeline, with Adam and momentum evaluated under the same data, model, and attack settings;
+\item a reproducible implementation supporting checkpointed optimization, resumable evaluation, and cluster execution for long-running attack experiments;
+\item an experimental result showing a clear static-transfer advantage for Adam, alongside negative results for both optimizers in the semi-dynamic and dynamic settings under the final evaluation protocol.
+\end{enumerate}
+
+\section{Report Organization}
+The remainder of the report is structured as follows. Chapter 2 reviews the most relevant literature and positions the present study. Chapter 3 explains the methodology and experimental design. Chapter 4 describes the experimental setup. Chapter 5 presents the results. Chapter 6 discusses their interpretation, validity, and limitations. Chapter 7 concludes the report and outlines future work.
+
+\chapter{Background and Related Work}
+\section{Prompt Injection in LLM Applications}
+Perez and Ribeiro gave one of the earliest systematic studies of prompt injection and showed that simple crafted inputs can cause goal hijacking and prompt leaking in language-model applications \cite{perez2022promptinject}. Their work is important because it moved the discussion from scattered examples to a clearer threat model. It also showed that prompt injection is not just a prompt-writing trick; it is a genuine security issue when applications build prompts by concatenating different kinds of text.
+
+\section{From Manual Attacks to Optimized Adversarial Suffixes}
+The next step in the literature was to move from hand-written attacks to automatically optimized suffixes. Zou et al. showed that gradient-based and greedy search can produce adversarial prompts that transfer across aligned language models \cite{zou2023gcg}. This shift matters because it turns attack construction into a repeatable optimization procedure rather than a manual search process.
+
+\section{Universal Prompt Injection}
+Liu et al. extended this direction to prompt injection in application-style settings and proposed an automatic gradient-based method for generating universal prompt injection data \cite{liu2024upi}. Their framework is especially relevant here because it studies transfer across downstream tasks while using only a small number of training samples. The current project follows that setup closely.
+
+\section{Position of the Present Study}
+The closest baseline for this work is the automatic universal prompt injection framework of Liu et al. \cite{liu2024upi}. The present study does not propose a new threat model, a new target objective, or a new benchmark. Instead, it asks a smaller question inside the existing framework: if the rest of the pipeline is held fixed, does changing the optimizer change the attack outcome in a meaningful way?
+
+\chapter{Methodology}
+\section{Design Principle}
+The methodology follows a controlled comparison design. The baseline pipeline, attack objective, target construction, dataset flow, and downstream evaluation logic are preserved. The only intended algorithmic variable is the optimizer used to update the coordinate-gradient statistics over the adversarial suffix. This design makes it possible to attribute observed changes primarily to optimizer behavior rather than to a broader change in attack formulation.
+
+\section{Mathematical Formulation}
+This project follows the loss-based view used in the automatic universal prompt injection paper and earlier adversarial suffix work \cite{liu2024upi,zou2023gcg}. Let $x_{1:n}$ denote the full token sequence seen by the model, and let $x_{n+1:n+H}^{\star}$ denote the target continuation to be induced. The conditional probability of a continuation can be written as
+\begin{equation}
+    p(x_{n+1:n+H}\mid x_{1:n}) = \prod_{i=1}^{H} p(x_{n+i}\mid x_{1:n+i-1}),
+\end{equation}
+and the target-conditioned loss is
+\begin{equation}
+    \mathcal{L}(x_{1:n}) = -\log p(x_{n+1:n+H}^{\star}\mid x_{1:n}).
+\end{equation}
+
+If $\mathcal{I}\subset\{1,\dots,n\}$ denotes the token positions occupied by the adversarial suffix, then suffix search can be written as
+\begin{equation}
+    \min_{x_{\mathcal{I}}\in\{1,\dots,V\}^{|\mathcal{I}|}} \mathcal{L}(x_{1:n}),
+\end{equation}
+where $V$ is the vocabulary size. This notation is close to the formalism used in the baseline literature \cite{liu2024upi,zou2023gcg}.
+
+In the universal setting used here, the same suffix is optimized over a small training set rather than a single prompt. The dataset-level objective can therefore be written as
+\begin{equation}
+    \min_{x_{\mathcal{I}}} \frac{1}{N}\sum_{j=1}^{N} \mathcal{L}\bigl(x^{(j)}_{1:n}\bigr).
+\end{equation}
+
+At step $t$, the implementation computes token-level coordinate gradients for each training instance and accumulates them into a shared gradient signal:
+\begin{equation}
+    g_t = \sum_{j=1}^{N} \nabla_{x_{\mathcal{I}}}\mathcal{L}\bigl(x_{1:n}^{(j)}\bigr).
+\end{equation}
+
+This aggregated quantity is then used to rank and sample candidate token replacements for the suffix. The key difference between the two compared methods lies in how this gradient signal is transformed before candidate search.
+
+\section{Optimizer Updates}
+The baseline paper uses momentum gradient-based search \cite{liu2024upi}. Let $h_t$ denote the running gradient state and let $\mu$ be the momentum coefficient. The update used in this project for the momentum baseline is
+\begin{equation}
+    h_t = \mu h_{t-1} + g_t,
+\end{equation}
+after which $h_t$ is used as the effective search direction.
+
+For the Adam variant introduced in this study, the gradient state is replaced by the standard Adam first- and second-moment estimates \cite{kingma2015adam}:
+\begin{align}
+    m_t &= \beta_1 m_{t-1} + (1-\beta_1) g_t, \\
+    v_t &= \beta_2 v_{t-1} + (1-\beta_2) g_t^2.
+\end{align}
+Bias correction is then applied:
+\begin{align}
+    \hat{m}_t &= \frac{m_t}{1-\beta_1^t}, \\
+    \hat{v}_t &= \frac{v_t}{1-\beta_2^t},
+\end{align}
+and the normalized search direction becomes
+\begin{equation}
+    d_t = \frac{\hat{m}_t}{\sqrt{\hat{v}_t}+\varepsilon}.
+\end{equation}
+
+In this project, $d_t$ is not used for continuous parameter descent in the usual neural-network sense. Instead, it is used to guide discrete token replacement during suffix search. This is why the report treats optimizer choice as part of the attack mechanism rather than as a low-level training detail.
+
+\section{Attack Pipeline}
+The pipeline optimizes a universal suffix over a small training slice and evaluates the resulting suffix on multiple downstream tasks. At each optimization step, gradients are computed with respect to the suffix tokens, aggregated across the active training examples, and used to propose new token candidates. Candidate suffixes are then scored and the best-scoring update is selected for the next step.
+
+Conceptually, the optimization loop contains four stages:
+\begin{enumerate}[label=\arabic*.]
+\item compute token-level gradient information for the current suffix;
+\item aggregate that information across training instances;
+\item update the optimizer state and score candidate replacements;
+\item select the best candidate and record the resulting loss.
+\end{enumerate}
+
+\section{Optimizer Substitution}
+The momentum baseline accumulates first-order gradient information across steps using a decay factor. The Adam variant keeps the same search loop but replaces that running state with bias-corrected first- and second-moment estimates. Nothing else in the search procedure is changed. In particular, the project does not modify the target strings, the suffix length, the training data slice, or the downstream prompt format.
+
+\section{Algorithmic Summary}
+Algorithm~\ref{alg:upi} summarizes the optimization loop used in the project.
+
+\begin{algorithm}[H]
+\caption{Universal Prompt Injection Optimization with Configurable Optimizer}
+\label{alg:upi}
+\begin{algorithmic}[1]
+\Require training prompts $\{x_i\}_{i=1}^{N}$, targets $\{y_i^{\star}\}_{i=1}^{N}$, suffix length $m$, budget $T$
+\State initialize suffix $s_0$
+\State initialize optimizer state
+\For{$t = 1$ to $T$}
+    \State $g_t \gets 0$
+    \For{each training pair $(x_i, y_i^{\star})$}
+        \State compute coordinate gradient $\nabla_{s}\mathcal{L}_{\theta}(x_i \oplus s_{t-1}, y_i^{\star})$
+        \State accumulate into $g_t$
+    \EndFor
+    \State transform $g_t$ using Momentum or Adam
+    \State sample candidate suffix edits guided by the transformed gradient
+    \State score candidates using the target loss
+    \State select the best candidate as $s_t$
+    \State record loss, suffix, and success status
+    \If{early stopping criterion is met}
+        \State break
+    \EndIf
+\EndFor
+\State \Return final suffix $s_t$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Attack Settings}
+Three injection settings are considered:
+\begin{itemize}
+\item \textbf{Static}, where success requires the exact malicious target string to be produced;
+\item \textbf{Semi-dynamic}, where success is measured by the appearance of the target domain string;
+\item \textbf{Dynamic}, where success is measured by the appearance of the target e-mail string.
+\end{itemize}
+
+These settings represent increasingly contextual forms of transfer. Static is the most literal and easiest to verify, while semi-dynamic and dynamic require the injected token sequence to survive task-conditioned generation.
+
+\section{Evaluation Method}
+The final evaluation uses downstream response generation followed by ASR aggregation. A generated response counts as successful if it satisfies the project-consistent target criterion for the corresponding injection mode. Static uses exact match. Semi-dynamic and dynamic use keyword containment based on the intended injected string.
+
+\section{Reproducibility Considerations}
+The experiments required more than a direct code run. Resume logic, cluster-specific job scripting, and evaluation artifact isolation were necessary to make the final comparison reproducible. These engineering steps are part of the methodology in a practical sense because they determine whether long-running experiments can be completed consistently and whether result aggregation remains clean.
+
+\chapter{Experimental Setup}
+\section{Model and Infrastructure}
+All final experiments were run on the IIT Bombay Prajna cluster using A40 GPUs. The source model for both optimization and evaluation was LLaMA-2-7B-Chat. Production execution was automated through Slurm job scripts, with monitoring support added for long-running jobs.
+
+\section{Optimization Configuration}
+The main optimization configuration was:
+\begin{itemize}
+\item model: \texttt{llama2};
+\item target index: \texttt{0};
+\item token budget: 120;
+\item training slice: five examples;
+\item batch size: 128;
+\item top-k candidate pool: 64;
+\item maximum optimization steps: 500;
+\item early-stopping patience: 20.
+\end{itemize}
+
+Both Adam and momentum runs used the same setting for all three injection modes.
+
+\section{Evaluation Configuration}
+The originally intended evaluation space was computationally expensive. The final reported comparison therefore uses a lean evaluation protocol:
+\begin{itemize}
+\item four downstream tasks instead of seven;
+\item 100 samples per task instead of 200;
+\item five generation attempts per sample instead of ten.
+\end{itemize}
+
+The retained tasks were duplicate sentence detection, summarization, grammar correction, and natural language inference. This subset was selected to preserve task diversity while reducing evaluation cost.
+
+\section{Evaluation Metric}
+The primary metric is attack success rate (ASR), computed as the fraction of evaluated samples for which the generated response satisfies the task-specific success rule for the corresponding injection mode. For presentation, all ASR values are reported as percentages.
+
+\chapter{Results}
+\section{Optimization Endpoints}
+Table~\ref{tab:optimization_summary} summarizes the final optimization states recovered from the training logs.
+
+\begin{table}[H]
+\centering
+\caption{Optimization endpoints for the final A40 runs.}
+\label{tab:optimization_summary}
+\begin{tabular}{llcc}
+\toprule
+\textbf{Optimizer} & \textbf{Injection} & \textbf{Final step} & \textbf{Final logged loss} \\
+\midrule
+Adam & Static & 499 & 0.3838 \\
+Adam & Semi-dynamic & 481 & 0.8096 \\
+Adam & Dynamic & 426 & 0.7485 \\
+Momentum & Static & 468 & 0.5205 \\
+Momentum & Semi-dynamic & 273 & 1.1113 \\
+Momentum & Dynamic & 390 & 0.7290 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At the optimization level, Adam ends with lower losses than momentum in the static and semi-dynamic settings. The dynamic setting is the only case in which momentum achieves a slightly lower final loss. These optimization results are informative but not sufficient on their own, because the main question is whether they translate into transfer behavior.
+
+\section{Transfer Evaluation}
+Table~\ref{tab:asr_main} presents the final ASR comparison under the lean evaluation protocol.
+
+\begin{table}[H]
+\centering
+\caption{Attack success rate (ASR) comparison under the final lean evaluation protocol. Values are percentages.}
+\label{tab:asr_main}
+\begin{tabular}{llccc}
+\toprule
+\textbf{Attack mode} & \textbf{Task} & \textbf{Adam} & \textbf{Momentum} & \textbf{Delta} \\
+\midrule
+\multirow{5}{*}{Static}
+& Duplicate sentence detection & \textbf{78.50} & 30.50 & +48.00 \\
+& Grammar correction & \textbf{5.22} & 0.00 & +5.22 \\
+& Natural language inference & \textbf{68.00} & 25.00 & +43.00 \\
+& Summarization & 0.00 & 0.00 & 0.00 \\
+& Average & \textbf{37.93} & 13.88 & +24.06 \\
+\midrule
+\multirow{5}{*}{Semi-dynamic}
+& Duplicate sentence detection & 0.00 & 0.00 & 0.00 \\
+& Grammar correction & 0.00 & 0.00 & 0.00 \\
+& Natural language inference & 0.00 & 0.00 & 0.00 \\
+& Summarization & 0.00 & 0.00 & 0.00 \\
+& Average & 0.00 & 0.00 & 0.00 \\
+\midrule
+\multirow{5}{*}{Dynamic}
+& Duplicate sentence detection & 0.00 & 0.00 & 0.00 \\
+& Grammar correction & 0.00 & 0.00 & 0.00 \\
+& Natural language inference & 0.00 & 0.00 & 0.00 \\
+& Summarization & 0.00 & 0.00 & 0.00 \\
+& Average & 0.00 & 0.00 & 0.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Main Findings}
+The clearest empirical result is the separation between the static and non-static regimes. In the static setting, Adam is consistently stronger than momentum and the margin is large enough to matter in practice, particularly on duplicate sentence detection and natural language inference. The difference is visible not only in the average ASR but also in the task-level breakdown.
+
+The semi-dynamic and dynamic settings tell a different story. Here the comparison does not produce a weaker version of the same trend; instead, it produces a complete collapse in measured transfer for both optimizers under the final evaluation protocol. Manual inspection of representative outputs confirms that the target domain and e-mail strings are simply absent from the generated responses.
+
+Taken together, the results suggest that improved optimization behavior is not sufficient on its own to guarantee broader transfer. Adam improves optimization endpoints in two of the three attack modes, yet the downstream benefit is concentrated in the setting that requires literal target-string reproduction.
+
+\chapter{Discussion}
+\section{Interpretation}
+The evidence supports a limited but meaningful conclusion. In the present setup, Adam improves the attack when success depends on reliably reproducing a fixed target string. That interpretation is consistent with the static results and with the lower terminal losses observed for Adam in the corresponding optimization logs.
+
+The same reasoning does not carry over to the semi-dynamic and dynamic settings. Those regimes require the injected content to survive a task-conditioned generation process and to reappear in outputs that are otherwise semantically tied to the downstream task. Under such conditions, the optimization problem appears to be constrained by more than gradient accumulation alone. The negative result is therefore informative: it indicates that better optimizer dynamics do not by themselves solve contextual transfer.
+
+\section{Threats to Validity}
+The project has several limitations that should be acknowledged explicitly.
+\begin{enumerate}[label=\arabic*.]
+\item The final comparison uses a lean evaluation protocol rather than the full planned task set.
+\item Only one source model and one target index were evaluated.
+\item The optimization uses a small training slice, which keeps the study controlled but limits coverage.
+\item Semi-dynamic and dynamic zero ASR may depend partly on the reduced retry budget, although the measured outcome under the adopted protocol remains zero.
+\item The project is an optimizer-substitution study, not a full exploration of alternative attack objectives or search strategies.
+\end{enumerate}
+
+\section{Validity of the Aggregation Pipeline}
+The final aggregation pipeline is correct for the reported experiment, but it is sensitive to filesystem hygiene because evaluation files are discovered recursively. During the project, an older smoke-test JSON remained inside the active result tree and had to be moved out before the final ASR calculation. This issue does not invalidate the final results, but it illustrates an important reproducibility lesson: result aggregation should be protected not only by code correctness, but also by clean experiment directories.
+
+\section{Implications}
+From a research standpoint, the project suggests that optimizer dynamics deserve explicit attention in future studies of automatic prompt attacks. From a systems standpoint, the work also reinforces a simpler lesson: long-running adversarial experiments are only as credible as the infrastructure used to execute and aggregate them. Resume logic, artifact isolation, and clean evaluation trees were necessary conditions for trustworthy results in this project.
+
+\chapter{Conclusion and Future Work}
+This report examined universal prompt injection from the perspective of optimization dynamics rather than attack formulation. By keeping the attack objective and evaluation pipeline fixed and varying only the optimizer used to accumulate coordinate-gradient information, the study isolates one specific source of variation inside the attack pipeline.
+
+The resulting picture is clear in one regime and inconclusive in the others. Adam offers a substantial advantage in the static setting, both in optimization quality and in downstream transfer ASR. No corresponding advantage appears in the semi-dynamic or dynamic settings, where both optimizers fail under the final evaluation protocol. The most reasonable interpretation is therefore not that Adam is universally superior, but that optimizer improvements are most useful when the attack objective aligns with stable literal target reproduction.
+
+Several extensions remain open. A full seven-task evaluation would provide a broader transfer picture. Restoring the larger retry budget may clarify whether the negative results in the contextual settings are partly evaluation-limited. It would also be useful to test whether the same optimizer effects persist across different source models, target strings, and search hyperparameters. These questions fall outside the scope of the present RnD project, but they follow naturally from the evidence reported here.
+
+\chapter*{References}
+\addcontentsline{toc}{chapter}{References}
+\begin{thebibliography}{9}
+
+\bibitem{liu2024upi}
+Xiaogeng Liu, Zhiyuan Yu, Yizhe Zhang, Ning Zhang, and Chaowei Xiao.
+\newblock Automatic and Universal Prompt Injection Attacks against Large Language Models.
+\newblock arXiv preprint arXiv:2403.04957, 2024.
+
+\bibitem{perez2022promptinject}
+F\'abio Perez and Ian Ribeiro.
+\newblock Ignore Previous Prompt: Attack Techniques for Language Models.
+\newblock arXiv preprint arXiv:2211.09527, 2022.
+
+\bibitem{zou2023gcg}
+Andy Zou, Zifan Wang, Nicholas Carlini, Milad Nasr, J. Zico Kolter, and Matt Fredrikson.
+\newblock Universal and Transferable Adversarial Attacks on Aligned Language Models.
+\newblock arXiv preprint arXiv:2307.15043, 2023.
+
+\bibitem{kingma2015adam}
+Diederik P. Kingma and Jimmy Ba.
+\newblock Adam: A Method for Stochastic Optimization.
+\newblock In \emph{Proceedings of the 3rd International Conference on Learning Representations (ICLR)}, 2015.
+
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+
+.venv/
+
+models/llama2/
+
+*.log
+*.out
+*.err
+logs_a40/
+logs_a40_smoke/
+logs_eval_a40/
+logs_eval_full_a40/
+logs_eval_full_a40_corrected/
+logs_paper_style/
+logs_test_adam_semi/
+
+results/
+results_full/
+results_full_corrected/
+results_paper_style/
+results_test_adam_semi/
+orphan-junk/
+
+Rnd papers/

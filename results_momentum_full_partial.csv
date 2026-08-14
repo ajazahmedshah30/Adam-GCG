@@ -1,0 +1,4 @@
+,duplicate_sentence_detection,grammar_correction,hate_detection,natural_language_inference,summarization,sentiment_analysis,spam_detection,average
+dynamic,0.0,0.0,0.0,0.0,0.0,,,0.0
+semi-dynamic,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+static,0.285,0.0,0.225,0.475,0.0,0.0,0.29,0.18214285714285713

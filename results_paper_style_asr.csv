@@ -1,0 +1,2 @@
+,duplicate_sentence_detection,grammar_correction,hate_detection,natural_language_inference,sentiment_analysis,spam_detection,summarization,average
+semi-dynamic (adam_b1_0.9_b2_0.999_eps_1e-08),0.0,0.0,0.0,0.0,0.0,0.035,0.0,0.005

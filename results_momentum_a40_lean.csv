@@ -1,0 +1,4 @@
+,duplicate_sentence_detection,grammar_correction,natural_language_inference,summarization,average
+dynamic,0.0,0.0,0.0,0.0,0.0
+semi-dynamic,0.0,0.0,0.0,0.0,0.0
+static,0.305,0.0,0.25,0.0,0.13874999999999998

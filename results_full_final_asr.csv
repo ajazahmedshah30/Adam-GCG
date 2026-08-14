@@ -1,0 +1,7 @@
+,duplicate_sentence_detection,grammar_correction,hate_detection,natural_language_inference,sentiment_analysis,spam_detection,summarization,average
+dynamic (adam_b1_0.9_b2_0.999_eps_1e-08),0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+dynamic (momentum_0.9),0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+semi-dynamic (adam_b1_0.9_b2_0.999_eps_1e-08),0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+semi-dynamic (momentum_0.9),0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+static (adam_b1_0.9_b2_0.999_eps_1e-08),0.83,0.07,0.145,0.855,0.635,0.735,0.0,0.46714285714285714
+static (momentum_0.9),0.295,0.0,0.23,0.515,0.0,0.34,0.0,0.19714285714285715

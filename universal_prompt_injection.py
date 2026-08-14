@@ -186,7 +186,49 @@ if __name__ == '__main__':
     adv_suffix = adv_string_init
     optimizer_state = {"previous_grad": None, "first_moment": None, "second_moment": None}
     optimizer_dir_name = get_optimizer_dir_name(args)
-    for j in tqdm(range(num_steps)):
+    
+    
+    # -----------  early stopping -step
+    best_loss = float('inf')
+    patience = 20
+    patience_counter = 0
+    #-------------------------
+    
+    
+    # ---------------- CHECKPOINT LOAD ---------------- #
+    output_dir = (
+        f"./results/eval/{args.model}/{args.injection}/"
+        f"{optimizer_dir_name}/token_length_{args.tokens}/target_{args.target}"
+    )
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    ckpt_path = f"{output_dir}/checkpoint.pt"
+
+    start_step = 0
+
+    if os.path.exists(ckpt_path):
+        print("Loading checkpoint...")
+        try:
+            ckpt = torch.load(ckpt_path, map_location=device)
+
+            start_step = ckpt.get("step", -1) +1
+            adv_suffix = ckpt.get("adv_suffix", adv_suffix)
+            optimizer_state = ckpt.get("optimizer_state", optimizer_state)
+            infos = ckpt.get("infos", {})
+
+            print(f"Resuming from step {start_step}")
+
+        except Exception as e:
+            print(f"Checkpoint load failed: {e}")
+            print("Starting fresh...")
+            start_step = 0
+    # ------------------------------------------------ #
+        
+    
+    
+    for j in tqdm(range(start_step, num_steps)):
         log = log_init()
         info = {"goal": "", "target": "", "final_suffix": "",
                 "final_respond": "", "total_time": 0, "is_success": False, "log": log}
@@ -257,7 +299,39 @@ if __name__ == '__main__':
         best_new_adv_suffix_id = losses.argmin()
         best_new_adv_suffix = new_adv_suffix[best_new_adv_suffix_id]
         current_loss = losses[best_new_adv_suffix_id] / (len(harmful_data.instruction[args.start:args.end]))
+        
+
         adv_suffix = best_new_adv_suffix
+        
+        
+
+        
+        
+        #----- EARLY STOPPING ----- #
+        if current_loss < best_loss:
+            best_loss = current_loss
+            patience_counter = 0
+
+            #  SAVE BEST MODEL
+            torch.save({
+                "step": j,
+                "adv_suffix": adv_suffix,
+                "optimizer_state": optimizer_state,
+                "infos": infos
+            }, ckpt_path)
+
+        else:
+            patience_counter += 1
+
+        if patience_counter >= patience:
+            print(f"Early stopping at step {j}")
+            break
+        # -------------------------- #      
+                
+        
+        
+        
+    
 
         print(
             "################################\n"
@@ -280,9 +354,16 @@ if __name__ == '__main__':
         info["target"] = target
         infos[j] = info
 
+
+
         output_dir = (
             f"./results/eval/{args.model}/{args.injection}/"
-            f"{optimizer_dir_name}/token_length_{args.tokens}/target_{args.target}"
+            f"{optimizer_dir_name}/token_length_{args.tokens}/target_{args.target}/"
+           
+           #----------
+            f"{args.save_suffix}"
+            #-----
+            
         )
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
